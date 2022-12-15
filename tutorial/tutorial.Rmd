@@ -1,0 +1,129 @@
+---
+title: "scTOP-R tutorial"
+output: html_notebook
+---
+
+Import the Mouse Cell Atlas/Kotton lab combined basis
+
+```{r}
+library(rhdf5)
+database_string <- paste(gsub("tutorial", "", getwd()),"/databases/", sep="")
+basis_data <- h5read(paste(database_string, "data_MC20-KO22.h5", sep=""), "df")
+
+# exceptions <- c()
+# for (cell_type in basis_data$axis0) {
+#   if ((grepl('Trophoblast', cell_type)) || (grepl('Cultured', cell_type))) {
+#     exceptions <- append(exceptions, cell_type)
+#   }
+# }
+
+# Create data frame with cell types as rows and genes as columns
+basis_df <- data.frame(basis_data$block0_values, row.names = basis_data$axis0)
+basis_df <- setNames(basis_df, basis_data$axis1)
+remove(basis_data)
+
+basis_metadata <- read.table(paste(database_string, "metadata_MC20-KO22.csv", sep=""), header=TRUE,
+   sep=",")
+types_to_keep <- subset(basis_metadata, basis_metadata$Cell.Count > 200)
+basis_df <- subset(basis_df, basis_metadata$Cell.Count > 200)
+
+```
+
+Import Herriges et al. data
+
+```{r}
+rawdata_herriges <- as.data.frame(t(read.csv('./21_01_06_herriges_with_week6_invivo.csv')))
+```
+
+Now we load corresponding metadata of the Herriges sample. This allows us to compare our labels with the labels from Herriges et al., and observe how projection score changes according to whether a cell is endogenous or a "transplant" (a stem-cell derived cell that was transplanted into a mouse).
+
+```{r}
+# TODO: rewrite this in R
+# metadata_herriges <- read.csv('./herriges_metadata.csv')
+# 
+# # Michael's labels for each of the clusters
+# cluster_key = {'2':'AT1 and AT1-like',
+#                '4':'Ciliated',
+#                '6':'Basal',
+#                '7':'Gastric-like',
+#                '8':'Neuroendocrine',
+#                '0+':'AT2',
+#                '1+13':'Secretory',
+#                '3+14':'AT2-like'}
+# 
+# clusters = metadata_herriges['new_clustering.07.12.2021'].values
+# cluster_labels = [cluster_key[cluster] for cluster in clusters]
+# identity = metadata_herriges['orig.ident'].values
+# 
+# type_annotations = np.array(cluster_labels)
+# 
+# type_annotations[type_annotations == 'AT2'] = 'AT2 and AT2-like' 
+# type_annotations[type_annotations == 'AT2-like'] = 'AT2 and AT2-like' 
+# 
+# # Sources for each of the cells
+# source_annotations = []
+# 
+# for label in identity:
+#     if 'Transplant' in label:
+#         source_annotations += ['Transplant']
+#     elif 'Endogenous' in label:
+#         source_annotations += ['Endogenous']
+#     elif 'Control' in label:
+#         source_annotations += ['Control']
+#         
+# source_annotations = np.array(source_annotations)
+```
+
+Process the raw sample data and calculate projection scores.
+
+```{r}
+process <- function(data, average=FALSE) {
+  print('processing started')
+  
+  # Normalize each sample independently
+  data_normalized <- sweep(data, 1, rowSums(data), "/")
+  
+  print('normalized')
+  
+  # Average across samples, if requested
+  if (average) {
+    data_normalized <- apply(data_normalized, 2, mean)
+  }
+  
+  # Find the normal-distribution z-scores
+  
+  dimensions <- dim(data_normalized)
+  
+  data_ranked <- t(apply(data_normalized, 1, rank, ties.method='average'))
+  print('ranked')
+  
+  data_zscored <- t(apply(data_ranked/(dimensions[1]+1), 1, qnorm))
+  print('zscored')
+  
+  return(data_zscored)
+}
+
+score <- function(basis, sample) {
+  common_genes <- intersect(colnames(basis_df), colnames(sample))
+  if (length(common_genes) == 0) {
+    stop("Basis and sample have no genes in common.")
+  }
+  basis_values <- basis[common_genes]
+  sample_values <- sample[common_genes]
+  
+  A <- (basis_values %*% t(basis_values))/dim(basis_values)[1]
+  print('calculated A')
+  
+  eta <- backsolve(A, basis_values, transpose = TRUE)/dim(basis_values)[1]
+  print('calculated eta')
+  
+  a <- eta %*% sample_values
+  
+  return(a)
+}
+
+data_herriges <- process(rawdata_herriges)
+scores <- score(basis_df, data_herriges)
+
+```
+
